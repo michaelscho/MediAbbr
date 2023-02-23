@@ -4,18 +4,8 @@ import config
 import re
 import random
 
-# creates ground truth data from xml files
-
-# load xml file in input folder
-# create txt files from that
-# line by line, break = no als eine line
-# one file abbreviated
-# one file expanded 
-# append txt files of xml files
-# append abbreviated with expanded separated by ';'
-# store in training
-
-
+""" Creates Ground Truth data from TEI encoded xml files 
+in data/input and stores ';' separated list in data/training"""
 
 def xml_to_ground_gruth(file):
     tree = LET.parse(file)
