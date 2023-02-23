@@ -1,12 +1,10 @@
 # MediAbbr
 ## Description
-This repository aims to collect tools and datasets dedicated to expanding abbreviations in HTR-generated diplomatic transcriptions of medieval manuscripts.
-Eventually, the aim is to provide a dataset of expansions and corresponding abbreviations and their textual context to train a context-aware 
-Sequence to sequence (S2S) model that can be included in an editorial workflow.
+This repository aims to collect tools and datasets dedicated to expanding abbreviations in HTR-generated diplomatic transcriptions of medieval manuscripts. Eventually, the aim is to provide a dataset of expansions and corresponding abbreviations and their textual context to train a context-aware Sequence to sequence (S2S) model that can be included in an editorial workflow.
 
 **Caution: At present, the list may contain errors and is not conclusive**
 
-The dataset will be provided as a work in progress, starting with a JSON File containing word-to-word matches of abbreviations and corresponding expansions.
+The dataset will be provided as a work in progress, starting with a JSON File containing word-to-word matches of abbreviations and corresponding expansions in 'resources'.
 This list will be corrected and updated in batches and can be used for a wordlist-based approach to expanding abbreviations.
 The abbreviations' special characters have been encoded in utf-8 based on a subset of MUFI (https://mufi.info/) recommendation using the following characters:
 
