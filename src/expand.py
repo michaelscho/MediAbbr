@@ -40,8 +40,10 @@ if __name__ == "__main__":
     model, tokenizer = load_model_and_custom_tokenizer(model_path, tokenizer_path)
 
     # Input text to expand
-    input_text = "firmis non soluatur nec ipsa parasceue quia cena dn̅i et parasceue et sabbatum ad illos"
-    
+    input_text = "firmis quia cena dn̅i et parasceue et sabbatum ad illos"
+
+    # overfitting!!!
+
     # Expand the abbreviation
     expanded_text = expand_abbreviation(model, tokenizer, input_text)
     
