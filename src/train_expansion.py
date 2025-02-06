@@ -1,167 +1,199 @@
-from transformers import T5ForConditionalGeneration, T5Config
-from torch.utils.data import DataLoader, Dataset
-from tokenizers import Tokenizer
-from datasets import load_dataset
-from torch.utils.data.dataset import random_split
-
 import torch
-import csv
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, Trainer, TrainingArguments
+from datasets import Dataset
+import pandas as pd
 import os
 
-class CustomDataset(Dataset):
-
-    def __init__(self, tokenizer, max_len=512):
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-        self.data = []
-        
-        with open(os.path.join(os.getcwd(),'..','data','training','seq2seq','seq2seq_gt.txt')) as file:
-            reader = csv.reader(file, delimiter='\t') # Assuming data is tab separated
-            for row in reader:
-                # Assuming the first column is abbreviated text and the second is expanded text
-                if len(row) == 2:
-                    self.data.append((row[0], row[1]))
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        abbreviated, expanded = self.data[idx]
-
-        # Encoding the abbreviated text
-        source_encoded = self.tokenizer.encode(abbreviated)
-        #print(source_encoded.ids)  # Check the encoded token IDs
-        #print(source_encoded.tokens)  # Check the tokens
-
-        source_tokenized = source_encoded.ids[:self.max_len]  # Truncate/pad as necessary
-        source_attention_mask = [1] * len(source_tokenized)
-
-        # Encoding the expanded text
-        target_encoded = self.tokenizer.encode(expanded)
-        target_tokenized = target_encoded.ids[:self.max_len]  # Truncate/pad as necessary
-
-        # Padding to max_len
-        padding_length = self.max_len - len(source_tokenized)
-        source_tokenized.extend([self.tokenizer.token_to_id("[PAD]")] * padding_length)
-        source_attention_mask.extend([0] * padding_length)
-
-        padding_length = self.max_len - len(target_tokenized)
-        target_tokenized.extend([self.tokenizer.token_to_id("[PAD]")] * padding_length)
-
-        return {
-            'input_ids': torch.tensor(source_tokenized, dtype=torch.long),
-            'attention_mask': torch.tensor(source_attention_mask, dtype=torch.long),
-            'labels': torch.tensor(target_tokenized, dtype=torch.long)
-        }
-
-"""
-def train_model(model, tokenizer, device, loader, optimizer, epochs):
-    model.train()
-    for epoch in range(epochs):
-        total_loss = 0
-        for batch in loader:
-            inputs = {k: v.to(device) for k, v in batch.items() if k != 'labels'}
-            labels = batch['labels'].to(device)
-            optimizer.zero_grad()
-            outputs = model(**inputs, labels=labels)
-            loss = outputs.loss
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-
-        avg_loss = total_loss / len(loader)
-        print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+# Check dataset
+""" 
+Data should be separated by ; with abbreviations on the left and expansions on the right.
+Length should be adjusted to max_length. Byt5 small can handle 512, larger up to 1024, 
+but 256 prooved to be suitable for tasks. Length should vary across dataset.
 """
 
-def train_model(model, train_loader, val_loader, optimizer, device, epochs=100, patience=10):
+def check_data():
+    with open("shuffled_output.txt", "r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if ";" not in line:
+                print(f"Issue at line {i + 1}: {line.strip()}")
+            else:
+                pass
+                #input_text, output_text = line.strip().split(";")
+                #print(f"Input: {input_text}, Output: {output_text}")
+
+
+# Load and process data
+def load_data(file_path):
+    data = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            #print(line)
+            input_text, output_text = line.strip().split(";")
+            data.append({"input_text": input_text, "output_text": output_text})
+    #print(data)
+    return pd.DataFrame(data)
+
+# Preprocessing
+def preprocess_function(examples, tokenizer, max_input_length=256, max_output_length=256):
+    """Tokenize the input and output sequences. 
+    Important: Make sure input lenght < outputlength in data, as abbreviations are smaller. """
+
+    model_inputs = tokenizer(
+        examples["input_text"],
+        max_length=max_input_length,
+        truncation=True,
+        padding="max_length",
+    )
+    labels = tokenizer(
+        examples["output_text"],
+        max_length=max_output_length,
+        truncation=True,
+        padding="max_length",
+    )
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
+
+def compute_metrics(eval_pred):
+    print(eval_pred) 
+    return {}
+
+# Training
+def train_model(data_path, model_name, output_dir, num_train_epochs=10):
+    # Load and preprocess data
+    df = load_data(data_path)
+    dataset = Dataset.from_pandas(df)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    dataset = dataset.map(lambda x: preprocess_function(x, tokenizer), batched=True)
+
+    # Split dataset
+    split = dataset.train_test_split(test_size=0.1)
+    train_dataset = split["train"]
+    test_dataset = split["test"]
+
+    # Load model
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+
+    # Define training arguments (TODO: Move outside as constants)
+    training_args = TrainingArguments(
+        output_dir=os.path.join(os.getcwd(), "..", "models", "byt5-small-finetuned"),
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        learning_rate=3e-5,  # LR must be adjusted to batch and size of dataset
+        per_device_train_batch_size=8,  # When scaling max_length, this needs to be smaller on my GPU (RTX3060)
+        per_device_eval_batch_size=8,
+        num_train_epochs=num_train_epochs,
+        weight_decay=0.01,
+        max_grad_norm=1.0,
+        fp16=False,
+        warmup_steps=500,
+        logging_dir="./logs",
+        logging_steps=200,
+        save_total_limit=2,
+        report_to="none",
+    )
+
+
+    # Initialize Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
+        tokenizer=tokenizer,
+        compute_metrics=compute_metrics
+    )
+
+    """ Switch to checkpoint if training is interupted """
+    #checkpoint_path = "./byt5-small-finetuned/checkpoint-11565"  # Replace with your checkpoint path
+    #trainer.train(resume_from_checkpoint=checkpoint_path)
+    # Train the model
+    trainer.train()
+
+    # Save the model and tokenizer
+    trainer.save_model(output_dir)
+    tokenizer.save_pretrained(output_dir)
+
+    print("Training completed and model saved.")
+
+def generate_with_beam_search(input_text, model_path, num_beams=5):
+    """
+    Generate text using beam search decoding.
+    num_beams of 5 was suitable, 
+    repetition_penalty helps reducing repetitions, 1.5 was suitable
+    """
+
+
+    # Load model and tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
+
+    # Move model to the appropriate device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-    best_val_loss = float('inf')
-    no_improve_epoch = 0
 
-    for epoch in range(epochs):
-        model.train()
-        total_loss = 0
-        for batch in train_loader:
-            inputs = {k: v.to(device) for k, v in batch.items() if k != 'labels'}
-            labels = batch['labels'].to(device)
-            optimizer.zero_grad()
-            outputs = model(**inputs, labels=labels)
-            loss = outputs.loss
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+    # Tokenize the input text
+    inputs = tokenizer(input_text, return_tensors="pt", truncation=True, max_length=256)
+    inputs = {key: value.to(device) for key, value in inputs.items()}
 
-        avg_train_loss = total_loss / len(train_loader)
+    # Generate output using beam search
+    outputs = model.generate(
+        **inputs,
+        max_length=256,
+        num_beams=num_beams,
+        early_stopping=True,
+        repetition_penalty=1.5
+    )
 
-        # Validation phase
-        model.eval()
-        total_val_loss = 0
-        with torch.no_grad():
-            for batch in val_loader:
-                inputs = {k: v.to(device) for k, v in batch.items() if k != 'labels'}
-                labels = batch['labels'].to(device)
-                outputs = model(**inputs, labels=labels)
-                loss = outputs.loss
-                total_val_loss += loss.item()
-
-        avg_val_loss = total_val_loss / len(val_loader)
-        print(f"Epoch {epoch+1}: Train loss: {avg_train_loss}, Val loss: {avg_val_loss}")
-
-        # Early Stopping
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            no_improve_epoch = 0
-            # Save the best model
-            torch.save(model.state_dict(), 'best_model.pt')
-        else:
-            no_improve_epoch += 1
-            if no_improve_epoch >= patience:
-                print(f"No improvement in validation loss for {patience} consecutive epochs. Stopping early.")
-                break
+    # Decode the generated tokens into text
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 
+# Main Function
+def main():
 
-# Setup
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # cuda for using gpu
+    check_data()
 
-# Load tokenizer customized for dataset 
-tokenizer_path = os.path.join(os.getcwd(),'..','models','tokenizer','trained_tokenizer.json')  # Update this path
-tokenizer = Tokenizer.from_file(tokenizer_path)
-# Load the T5 model configuration
-config = T5Config.from_pretrained('t5-small')
-# Then initialize the T5 model from the configuration
-model = T5ForConditionalGeneration(config).to(device)
+    # Paths and settings
+    data_path = os.path.join(os.getcwd(), "..", "data", "input", "shuffled_output.txt")
+    model_name = "google/byt5-small"
+    output_dir = os.path.join(os.getcwd(), "..", "models", "byt5-small-finetuned")
 
-# Optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)
+    # Train the model
+    print("Starting training...")
+    train_model(data_path, model_name, output_dir, num_train_epochs=10) # 10 epochs was minimum for good results
 
-"""
-# Dataset preparation
-train_dataset = CustomDataset(tokenizer, max_len=128)
-train_loader = DataLoader(train_dataset, batch_size=32)
-"""
+    # Test the model
+    print("Testing the model...")
+    test_input = "ep\u0305s non licet sed etiam humanā gr̅am"
+    output = generate_with_beam_search(test_input, output_dir, num_beams=5)
+    # "episcopus non licet sed etiam humanam gratiam"
+    print(f"Input: {test_input}\nOutput: {output}")
 
-# Loading Dataset
-full_dataset = CustomDataset(tokenizer, max_len=128)
-
-# Splitting the dataset
-train_size = int(0.8 * len(full_dataset))
-val_size = len(full_dataset) - train_size
-train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
-
-# Creating DataLoader for training and validation datasets
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=32)
+# Test the model
+    print("Testing the model...")
+    test_input = "Ex decr̅ Felici om̄ib fr̅ib missis"
+    output = generate_with_beam_search(test_input, output_dir, num_beams=5)
+    # "Ex decretis Felici omnibus factibus missis"
+    print(f"Input: {test_input}\nOutput: {output}")
 
 
-# Training loop
-#train_model(model, tokenizer, device, train_loader, optimizer, 200)
-train_model(model, train_loader, val_loader, optimizer, device, epochs=100, patience=10)
+    test_input = "ouibus non repraehendendos quod absit"
+    output = generate_with_beam_search(test_input, output_dir, num_beams=5)
+    # "ouibus non repraehendendos quod absit"
+    print(f"Input: {test_input}\nOutput: {output}")
+
+    test_input = "Qđ non licet"
+    output = generate_with_beam_search(test_input, output_dir, num_beams=5)
+    # "Quod non licet"
+    print(f"Input: {test_input}\nOutput: {output}")
+
+    test_input = "Et tamen diis suis ista non tribuunt quoꝝ cultū ideo reqͥrunt ne ista uel ̄inora patiantur cum ea maiora ꝑtulerint a quib antea colebant"
+    output = generate_with_beam_search(test_input, output_dir, num_beams=5)
+    # "Et tamen diis suis ista non tribuunt quorum cultum ideo requirunt ne ista uel minora patiantur cum ea maiora pertulerint a quibus antea colebantur"
+    print(f"Input: {test_input}\nOutput: {output}")
 
 
-# Save the model and tokenizer
-model_save_directory = os.path.join(os.getcwd(),'..','models','seq2seq')
-tokenizer_save_directory = os.path.join(os.getcwd(),'..','models','seq2seq','tokenizer.json')
 
-model.save_pretrained(model_save_directory)
-tokenizer.save(tokenizer_save_directory)
+if __name__ == "__main__":
+    main()
